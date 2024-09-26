@@ -8,6 +8,10 @@ import franklinwh
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
 
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
     SensorDeviceClass,
@@ -60,6 +64,11 @@ def setup_platform(
         BatteryChargeSensor(cache),
         BatteryDischargeSensor(cache),
         GeneratorUseSensor(cache),  # Adding the new generator sensor here
+        GridExportSensor(cache),
+        GridImportSensor(cache),
+        HomeUseSensor(cache),
+        GeneratorDailyUseSensor(cache),
+        SolarUseSensor(cache),
         ])
 
 UPDATE_INTERVAL = 60
@@ -184,7 +193,7 @@ class BatteryChargeSensor(SensorEntity):
     _attr_name = "FranklinWH Battery Charge"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, cache):
         self._cache = cache
@@ -203,7 +212,7 @@ class BatteryDischargeSensor(SensorEntity):
     _attr_name = "FranklinWH Battery Discharge"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
     def __init__(self, cache):
         self._cache = cache
@@ -215,6 +224,101 @@ class BatteryDischargeSensor(SensorEntity):
         """
         stats = self._cache.fetch()
         self._attr_native_value = stats.totals.battery_discharge
+
+class GridImportSensor(SensorEntity):
+    """Shows the Grid Import"""
+
+    _attr_name = "FranklinWH Grid Import"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+        stats = self._cache.fetch()
+        self._attr_native_value = stats.totals.grid_import
+
+class GridExportSensor(SensorEntity):
+    """Shows the Grid Export totals"""
+
+    _attr_name = "FranklinWH Grid Export"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+        stats = self._cache.fetch()
+        self._attr_native_value = stats.totals.grid_export
+
+class HomeUseSensor(SensorEntity):
+    """Shows the Home Use daily totals"""
+
+    _attr_name = "FranklinWH Home Daily Use"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+        stats = self._cache.fetch()
+        self._attr_native_value = stats.totals.home_use
+
+class GeneratorDailyUseSensor(SensorEntity):
+    """Shows the Generator Total daily use"""
+
+    _attr_name = "FranklinWH Generator Daily Use"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+        stats = self._cache.fetch()
+        self._attr_native_value = stats.totals.generator
+
+class SolarUseSensor(SensorEntity):
+    """Shows the charging stats of the battery"""
+
+    _attr_name = "FranklinWH Solar Daily Use"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, cache):
+        self._cache = cache
+
+    def update(self) -> None:
+        """Fetch new state data for the sensor.
+
+        This is the only method that should fetch new data for Home Assistant.
+        """
+        stats = self._cache.fetch()
+        self._attr_native_value = stats.totals.solar
 
 class GeneratorUseSensor(SensorEntity):
     """Shows the current power output of the generator"""
