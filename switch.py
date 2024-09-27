@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import franklinwh
+from franklin_client import Client, TokenFetcher, Mode
 
 from homeassistant.components.switch import (
     SwitchEntity,
@@ -43,8 +43,8 @@ def setup_platform(
 
     switches: list[int] = list(map(lambda x: x-1, config[CONF_SWITCHES]))
 
-    fetcher = franklinwh.TokenFetcher(username, password)
-    client = franklinwh.Client(fetcher, gateway)
+    fetcher = TokenFetcher(username, password)
+    client = Client(fetcher, gateway)
 
     add_entities([
         SmartCircuitSwitch(name, switches, client),

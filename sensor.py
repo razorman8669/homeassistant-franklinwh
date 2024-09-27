@@ -3,7 +3,7 @@ from __future__ import annotations
 from threading import Lock
 import time
 
-import franklinwh
+from franklin_client import Client, TokenFetcher, Mode
 
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
@@ -51,8 +51,8 @@ def setup_platform(
     password: str = config[CONF_PASSWORD]
     gateway: str = config[CONF_ID]
 
-    fetcher = franklinwh.TokenFetcher(username, password)
-    client = franklinwh.Client(fetcher, gateway)
+    fetcher = TokenFetcher(username, password)
+    client = Client(fetcher, gateway)
     cache = CachingClient(client.get_stats)
 
     add_entities([
