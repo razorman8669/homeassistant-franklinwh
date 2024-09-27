@@ -3,7 +3,7 @@ from __future__ import annotations
 from threading import Lock
 import time
 
-from franklin_client import Client, TokenFetcher, Mode
+from .franklin_client import Client, TokenFetcher, Mode
 
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv

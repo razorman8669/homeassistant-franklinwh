@@ -1,3 +1,6 @@
+"""
+From https://github.com/richo/franklinwh-python
+"""
 import json
 import zlib
 import time
