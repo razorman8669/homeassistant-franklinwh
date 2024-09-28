@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from .franklin_client import Client, TokenFetcher, Mode
+from .franklin_client import Client, TokenFetcher
 
 from homeassistant.components.switch import (
     SwitchEntity,

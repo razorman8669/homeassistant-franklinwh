@@ -1,9 +1,17 @@
-"""Platform for sensor integration."""
+"""Platform for sensor and select integration."""
 from __future__ import annotations
 from threading import Lock
 import time
 
-from .franklin_client import Client, TokenFetcher, Mode
+from .franklin_client import (
+    Client,
+    TokenFetcher,
+    Mode,
+    MODE_TIME_OF_USE,
+    MODE_SELF_CONSUMPTION,
+    MODE_EMERGENCY_BACKUP,
+    MODE_OPTIONS
+)
 
 import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
@@ -18,7 +26,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.select import SelectEntity
 from homeassistant.const import (
         UnitOfPower,
         UnitOfEnergy,
@@ -31,6 +39,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+
 PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
         {
             vol.Required(CONF_USERNAME): cv.string,
@@ -39,14 +48,13 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
             }
         )
 
-
 def setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
     add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None
 ) -> None:
-    """Set up the sensor platform."""
+    """Set up the sensor and select platform."""
     username: str = config[CONF_USERNAME]
     password: str = config[CONF_PASSWORD]
     gateway: str = config[CONF_ID]
@@ -55,7 +63,9 @@ def setup_platform(
     client = Client(fetcher, gateway)
     cache = CachingClient(client.get_stats)
 
-    add_entities([
+    _LOGGER.debug('setting up franklin platform')
+
+    entities = [
         FranklinBatterySensor(cache),
         HomeLoadSensor(cache),
         BatteryUseSensor(cache),
@@ -63,13 +73,18 @@ def setup_platform(
         SolarProductionSensor(cache),
         BatteryChargeSensor(cache),
         BatteryDischargeSensor(cache),
-        GeneratorUseSensor(cache),  # Adding the new generator sensor here
+        GeneratorUseSensor(cache),
         GridExportSensor(cache),
         GridImportSensor(cache),
         HomeUseSensor(cache),
         GeneratorDailyUseSensor(cache),
         SolarUseSensor(cache),
-        ])
+        # Pass hass to the select entity
+        FranklinModeSelect(hass, client)
+    ]
+
+    add_entities(entities)
+
 
 UPDATE_INTERVAL = 60
 class CachingClient(object):
@@ -89,8 +104,69 @@ class CachingClient(object):
                 self.last_fetched = now
                 self._fetch()
             return self.data
-
 # TODO(richo) Figure out how to have a singleton cache for the franklin data
+
+
+class FranklinModeSelect(SelectEntity):
+    """Representation of a select entity to change the FranklinWH operating mode."""
+
+    def __init__(self, hass: HomeAssistant, client):
+        self._client = client
+        self._attr_options = MODE_OPTIONS
+        self._attr_name = "FranklinWH Operating Mode"
+        self._attr_current_option = None
+        self.hass = hass  # Store hass instance for async calls
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return self._attr_name
+
+    @property
+    def options(self):
+        """Return the list of available options."""
+        return self._attr_options
+
+    @property
+    def current_option(self):
+        """Return the current selected option."""
+        return self._attr_current_option
+
+    async def async_update(self):
+        """Fetch the current mode from the client asynchronously."""
+        try:
+            mode_data = await self.hass.async_add_executor_job(self._client.get_mode)
+            mode, soc = mode_data
+            self._attr_current_option = mode
+        except Exception as e:
+            _LOGGER.error(f"Error updating FranklinWH operating mode: {e}")
+
+    async def async_select_option(self, option):
+        """Change the operating mode to the selected option asynchronously."""
+        if option not in self._attr_options:
+            _LOGGER.error(f"Invalid option selected: {option}")
+            return
+        try:
+            # Create the appropriate Mode object
+            if option == MODE_TIME_OF_USE:
+                mode_obj = Mode.time_of_use()
+            elif option == MODE_SELF_CONSUMPTION:
+                mode_obj = Mode.self_consumption()
+            elif option == MODE_EMERGENCY_BACKUP:
+                mode_obj = Mode.emergency_backup()
+            else:
+                _LOGGER.error(f"Invalid mode selected: {option}")
+                return
+
+            # Set the mode via the client in an executor
+            await self.hass.async_add_executor_job(self._client.set_mode, mode_obj)
+            # Update the current option
+            self._attr_current_option = option
+            # Optionally, force an update to refresh the state
+            await self.async_update()
+        except Exception as e:
+            _LOGGER.error(f"Error setting FranklinWH operating mode: {e}")
+
 
 class FranklinBatterySensor(SensorEntity):
     """Shows the current state of charge of the battery"""

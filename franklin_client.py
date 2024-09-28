@@ -44,33 +44,42 @@ MODE_TIME_OF_USE = "time_of_use"
 MODE_SELF_CONSUMPTION = "self_consumption"
 MODE_EMERGENCY_BACKUP = "emergency_backup"
 
+MODE_OPTIONS = [
+    MODE_TIME_OF_USE,
+    MODE_SELF_CONSUMPTION,
+    MODE_EMERGENCY_BACKUP,
+]
+
 DEFAULT_URL_BASE = "https://energy.franklinwh.com/";
 
 MODE_MAP = {
         9322: MODE_TIME_OF_USE,
         9323: MODE_SELF_CONSUMPTION,
         9324: MODE_EMERGENCY_BACKUP,
+        105249: MODE_TIME_OF_USE,
+        122324: MODE_SELF_CONSUMPTION,
+        55842: MODE_EMERGENCY_BACKUP,
         }
 
 class Mode(object):
     @staticmethod
-    def time_of_use(soc=20):
+    def time_of_use(soc=15):
         mode = Mode(soc)
-        mode.currendId = 9322
+        mode.currendId = 105249
         mode.workMode = 1
         return mode
 
     @staticmethod
     def emergency_backup(soc=100):
         mode = Mode(soc)
-        mode.currendId = 9324
+        mode.currendId = 55842
         mode.workMode = 3
         return mode
 
     @staticmethod
     def self_consumption(soc=20):
         mode = Mode(soc)
-        mode.currendId = 9323
+        mode.currendId = 122324
         mode.workMode = 2
         return mode
 
@@ -86,7 +95,7 @@ class Mode(object):
                 "lang": "EN_US",
                 "oldIndex": "1", # Who knows if this matters
                 "soc": str(self.soc),
-                "stromEn": "1",
+                "stromEn": "0",
                 "workMode": str(self.workMode),
                 }
 
@@ -255,17 +264,19 @@ class Client(object):
         url = DEFAULT_URL_BASE + "hes-gateway/terminal/tou/updateTouMode"
         payload = mode.payload(self.gateway)
         res = self._post_form(url, payload)
+        return res
 
     def get_mode(self):
         status = self._switch_status()
-        # TODO(richo) These are actually wrong but I can't obviously find where to get the correct values right now.
-        mode_name = MODE_MAP[status["runingMode"]]
+        mode_name = MODE_MAP.get(status["runingMode"], "unknown_mode")  # Default to "unknown_mode"
         if mode_name == MODE_TIME_OF_USE:
             return (mode_name, status["touMinSoc"])
         elif mode_name == MODE_SELF_CONSUMPTION:
             return (mode_name, status["selfMinSoc"])
         elif mode_name == MODE_EMERGENCY_BACKUP:
             return (mode_name, status["backupMaxSoc"])
+        else:
+            return ("unknown_mode", None)  # Handle unknown modes
 
     def get_stats(self) -> dict:
         """Get current statistics for the FHP.
