@@ -24,6 +24,9 @@ class Current:
     grid_use: float
     home_load: float
     battery_soc: float
+    switch_1_load: float
+    switch_2_load: float
+    v2l_use: float
 
 @dataclass
 class Totals:
@@ -34,6 +37,10 @@ class Totals:
     solar: float
     generator: float
     home_use: float
+    switch_1_use: float
+    switch_2_use: float
+    v2l_export: float
+    v2l_import: float
 
 @dataclass
 class Stats:
@@ -102,20 +109,20 @@ class Mode(object):
 
 
 
-class TokenExpiredException(BaseException):
+class TokenExpiredException(Exception):
     """raised when the token has expired to signal upstream that you need to create a new client or inject a new token"""
     pass
 
-class AccountLockedException(BaseException):
+class AccountLockedException(Exception):
     pass
 
-class InvalidCredentialsException(BaseException):
+class InvalidCredentialsException(Exception):
     pass
 
-class DeviceTimeoutException(BaseException):
+class DeviceTimeoutException(Exception):
     pass
 
-class GatewayOfflineException(BaseException):
+class GatewayOfflineException(Exception):
     pass
 
 class TokenFetcher(object):
@@ -252,6 +259,13 @@ class Client(object):
         data = self._mqtt_send(payload)['result']['dataArea']
         return json.loads(data)
 
+    # Sends a 353 which grabs real-time smart-circuit load information
+    # https://github.com/richo/homeassistant-franklinwh/issues/27#issuecomment-2714422732
+    def _switch_usage(self):
+        payload = self._build_payload(353, {"opt":0, "order": self.gateway})
+        data = self._mqtt_send(payload)['result']['dataArea']
+        return json.loads(data)
+
     def set_mode(self, mode):
         # Time of use:
         # currendId=9322&gatewayId=___&lang=EN_US&oldIndex=3&soc=15&stromEn=1&workMode=1
@@ -284,6 +298,7 @@ class Client(object):
         This includes instantaneous measurements for current power, as well as totals for today (in local time)
         """
         data = self._status()
+        swdata = self._switch_usage()
 
         return Stats(
                 Current(
@@ -292,7 +307,10 @@ class Client(object):
                     data["p_fhp"],
                     data["p_uti"],
                     data["p_load"],
-                    data["soc"]
+                    data["soc"],
+                    swdata["SW1ExpPower"],
+                    swdata["SW2ExpPower"],
+                    swdata["CarSWPower"],
                     ),
                 Totals(
                     data["kwh_fhp_chg"],
@@ -301,7 +319,11 @@ class Client(object):
                     data["kwh_uti_out"],
                     data["kwh_sun"],
                     data["kwh_gen"],
-                    data["kwh_load"]
+                    data["kwh_load"],
+                    swdata["SW1ExpEnergy"],
+                    swdata["SW2ExpEnergy"],
+                    swdata["CarSWExpEnergy"],
+                    swdata["CarSWImpEnergy"],
                     ))
 
     def next_snno(self):
