@@ -1,11 +1,9 @@
 {
   "domain": "franklin_wh",
   "name": "FranklinWH",
-  "codeowners": ["@razorman8669"],
   "dependencies": [],
-  "documentation": "https://github.com/razorman8669/homeassistant-franklinwh/wiki",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "requirements": ["requests==2.32.5"],
-  "version": "0.2.1"
+  "requirements": [],
+  "version": "0.2.2"
 }
