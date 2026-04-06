@@ -1,139 +1,109 @@
-"""Platform for the select integration for FranklinWH."""
+"""Select platform for FranklinWH operating mode."""
 from __future__ import annotations
-from homeassistant.components.select import (
-    SelectEntity,
-    PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
-)
-from homeassistant.core import HomeAssistant
 
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-
-from time import time
+from datetime import timedelta
+import logging
 
 import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
 
-from .franklin_client import (
-    Client,
-    TokenFetcher,
-    Mode,
-    MODE_TIME_OF_USE,
-    MODE_SELF_CONSUMPTION,
-    MODE_EMERGENCY_BACKUP,
-    MODE_OPTIONS
+from homeassistant.components.select import (
+    PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
+    SelectEntity,
 )
+from homeassistant.const import CONF_ID, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-import logging
+from .coordinator import (
+    DEFAULT_UPDATE_INTERVAL,
+    FranklinCoordinator,
+    get_coordinator,
+)
+from .franklin_client import (
+    MODE_EMERGENCY_BACKUP,
+    MODE_OPTIONS,
+    MODE_SELF_CONSUMPTION,
+    MODE_TIME_OF_USE,
+    AccountLockedException,
+    DeviceTimeoutException,
+    FranklinAPIError,
+    GatewayOfflineException,
+    InvalidCredentialsException,
+    Mode,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
-from homeassistant.const import (
-        CONF_USERNAME,
-        CONF_PASSWORD,
-        CONF_ID,
-        )
-
 PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
-        {
-            vol.Required(CONF_USERNAME): cv.string,
-            vol.Required(CONF_PASSWORD): cv.string,
-            vol.Required(CONF_ID): cv.string,
-            }
-        )
+    {
+        vol.Required(CONF_USERNAME): cv.string,
+        vol.Required(CONF_PASSWORD): cv.string,
+        vol.Required(CONF_ID): cv.string,
+        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): cv.time_period,
+    }
+)
 
-def setup_platform(
+MODE_FACTORY = {
+    MODE_TIME_OF_USE: Mode.time_of_use,
+    MODE_SELF_CONSUMPTION: Mode.self_consumption,
+    MODE_EMERGENCY_BACKUP: Mode.emergency_backup,
+}
+
+
+async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
-    add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
     """Set up the FranklinWH select platform."""
     username: str = config[CONF_USERNAME]
     password: str = config[CONF_PASSWORD]
     gateway: str = config[CONF_ID]
+    update_interval: timedelta = config["update_interval"]
 
-    fetcher = TokenFetcher(username, password)
-    client = Client(fetcher, gateway)
+    coordinator = await get_coordinator(
+        hass, username, password, gateway,
+        update_interval=update_interval,
+    )
 
     _LOGGER.debug("Setting up FranklinWH select platform")
+    async_add_entities([FranklinModeSelect(coordinator)])
 
-    # Add select entity to Home Assistant
-    add_entities([FranklinModeSelect(client)])
 
-class FranklinModeSelect(SelectEntity):
-    """Representation of a select entity to change the FranklinWH operating mode."""
+class FranklinModeSelect(CoordinatorEntity[FranklinCoordinator], SelectEntity):
+    """Select entity for FranklinWH operating mode."""
 
-    def __init__(self, client):
-        self._client = client
-        self._attr_options = MODE_OPTIONS
-        self._attr_name = "FranklinWH Operating Mode Select"
-        self._attr_unique_id = (
-            f"franklin_operating_mode_select"
-        )
-
-        self._attr_current_option = None
-        self._last_fetched = 0  # Timestamp of the last fetch
-        self._cache_duration = 60  # Cache data for 60 seconds
-        self._cached_mode = None  # Cache the last mode
-        _LOGGER.debug("Initializing FranklinWH Mode Select Entity")
+    _attr_options = MODE_OPTIONS
+    _attr_name = "FranklinWH Operating Mode Select"
+    _attr_unique_id = "franklin_operating_mode_select"
 
     @property
-    def name(self):
-        """Return the name of the entity."""
-        return self._attr_name
+    def current_option(self) -> str | None:
+        if self.coordinator.data and self.coordinator.data.mode:
+            return self.coordinator.data.mode
+        return None
 
-    @property
-    def options(self):
-        """Return the list of available options."""
-        return self._attr_options
+    async def async_select_option(self, option: str) -> None:
+        if option not in MODE_FACTORY:
+            raise HomeAssistantError(f"Invalid FranklinWH mode: {option}")
 
-    @property
-    def current_option(self):
-        """Return the current selected option."""
-        return self._attr_current_option
-
-    def update(self):
-        """Fetch the current mode from the client, respecting the cache duration."""
-        current_time = time()
-        if current_time - self._last_fetched < self._cache_duration:
-            # Use cached data if last fetch was within 60 seconds
-            _LOGGER.debug("Using cached mode data.")
-            self._attr_current_option = self._cached_mode
-            return
-
-        # Otherwise, fetch the data from the API
+        mode_obj = MODE_FACTORY[option]()
         try:
-            mode, soc = self._client.get_mode()
-            self._attr_current_option = mode
-            self._cached_mode = mode  # Cache the mode data
-            self._last_fetched = current_time  # Update the last fetched timestamp
-            _LOGGER.debug(f"Fetched new mode data: {mode}")
-        except Exception as e:
-            _LOGGER.error(f"Error updating FranklinWH operating mode: {e}")
+            await self.hass.async_add_executor_job(
+                self.coordinator.client.set_mode, mode_obj
+            )
+        except (
+            DeviceTimeoutException,
+            GatewayOfflineException,
+            AccountLockedException,
+            InvalidCredentialsException,
+            FranklinAPIError,
+        ) as err:
+            raise HomeAssistantError(f"Failed to set FranklinWH mode: {err}") from err
 
-    def select_option(self, option):
-        """Change the operating mode to the selected option."""
-        if option not in self._attr_options:
-            _LOGGER.error(f"Invalid option selected: {option}")
-            return
-        try:
-            # Create the appropriate Mode object
-            if option == MODE_TIME_OF_USE:
-                mode_obj = Mode.time_of_use()
-            elif option == MODE_SELF_CONSUMPTION:
-                mode_obj = Mode.self_consumption()
-            elif option == MODE_EMERGENCY_BACKUP:
-                mode_obj = Mode.emergency_backup()
-            else:
-                _LOGGER.error(f"Invalid mode selected: {option}")
-                return
-            # Set the mode via the client
-            self._client.set_mode(mode_obj)
-            # Update the current option
-            self._attr_current_option = option
-            self._cached_mode = option  # Cache the newly set mode
-            self._last_fetched = time()  # Reset the cache timer
-        except Exception as e:
-            _LOGGER.error(f"Error setting FranklinWH operating mode: {e}")
- # type: ignore
+        await self.coordinator.async_request_refresh()

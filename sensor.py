@@ -1,21 +1,10 @@
-"""Platform for sensor and select integration."""
+"""Sensor platform for FranklinWH."""
 from __future__ import annotations
-from threading import Lock
-import time
 
-from .franklin_client import (
-    Client,
-    TokenFetcher,
-    DeviceTimeoutException,
-    GatewayOfflineException,
-)
-
-import voluptuous as vol
-import homeassistant.helpers.config_validation as cv
-
+from datetime import timedelta
 import logging
 
-_LOGGER = logging.getLogger(__name__)
+import voluptuous as vol
 
 from homeassistant.components.sensor import (
     PLATFORM_SCHEMA as PARENT_PLATFORM_SCHEMA,
@@ -23,103 +12,87 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.components.select import SelectEntity
 from homeassistant.const import (
-        UnitOfPower,
-        UnitOfEnergy,
-        PERCENTAGE,
-        CONF_USERNAME,
-        CONF_PASSWORD,
-        CONF_ID,
-        )
-
+    CONF_ID,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    PERCENTAGE,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
+import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .coordinator import (
+    DEFAULT_UPDATE_INTERVAL,
+    FranklinCoordinator,
+    FranklinData,
+    get_coordinator,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
-        {
-            vol.Required(CONF_USERNAME): cv.string,
-            vol.Required(CONF_PASSWORD): cv.string,
-            vol.Required(CONF_ID): cv.string,
-            }
-        )
+    {
+        vol.Required(CONF_USERNAME): cv.string,
+        vol.Required(CONF_PASSWORD): cv.string,
+        vol.Required(CONF_ID): cv.string,
+        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): cv.time_period,
+        vol.Optional("tolerate_stale_data", default=False): cv.boolean,
+    }
+)
 
-def setup_platform(
+
+async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
-    add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
 ) -> None:
-    """Set up the sensor and select platform."""
+    """Set up the FranklinWH sensor platform."""
     username: str = config[CONF_USERNAME]
     password: str = config[CONF_PASSWORD]
     gateway: str = config[CONF_ID]
+    update_interval: timedelta = config["update_interval"]
+    tolerate_stale_data: bool = config["tolerate_stale_data"]
 
-    fetcher = TokenFetcher(username, password)
-    client = Client(fetcher, gateway)
-    cache = CachingClient(client.get_stats)
+    coordinator = await get_coordinator(
+        hass, username, password, gateway,
+        update_interval=update_interval,
+        tolerate_stale_data=tolerate_stale_data,
+    )
 
-    _LOGGER.debug('setting up franklin platform')
+    _LOGGER.debug("Setting up FranklinWH sensor platform")
 
-    entities = [
-        FranklinBatterySensor(cache),
-        HomeLoadSensor(cache),
-        BatteryUseSensor(cache),
-        GridUseSensor(cache),
-        SolarProductionSensor(cache),
-        BatteryChargeSensor(cache),
-        BatteryDischargeSensor(cache),
-        GeneratorUseSensor(cache),
-        GridExportSensor(cache),
-        GridImportSensor(cache),
-        HomeUseSensor(cache),
-        GeneratorDailyUseSensor(cache),
-        SolarUseSensor(cache),
-        Sw1LoadSensor(cache),
-        Sw1UseSensor(cache),
-        Sw2LoadSensor(cache),
-        Sw2UseSensor(cache),
-        V2LUseSensor(cache),
-        V2LExportSensor(cache),
-        V2LImportSensor(cache),
-    ]
-
-    add_entities(entities)
+    async_add_entities([
+        FranklinBatterySensor(coordinator),
+        HomeLoadSensor(coordinator),
+        BatteryUseSensor(coordinator),
+        GridUseSensor(coordinator),
+        SolarProductionSensor(coordinator),
+        BatteryChargeSensor(coordinator),
+        BatteryDischargeSensor(coordinator),
+        GeneratorUseSensor(coordinator),
+        GridExportSensor(coordinator),
+        GridImportSensor(coordinator),
+        HomeUseSensor(coordinator),
+        GeneratorDailyUseSensor(coordinator),
+        SolarUseSensor(coordinator),
+        Sw1LoadSensor(coordinator),
+        Sw1UseSensor(coordinator),
+        Sw2LoadSensor(coordinator),
+        Sw2UseSensor(coordinator),
+        V2LUseSensor(coordinator),
+        V2LExportSensor(coordinator),
+        V2LImportSensor(coordinator),
+    ])
 
 
-UPDATE_INTERVAL = 60
-class CachingClient(object):
-    def __init__(self, update_func):
-        self.mutex = Lock()
-        self.update_func = update_func
-        self.last_fetched = 0
-        self.data = None
-
-    def _fetch(self):
-        retries = 3
-        for attempt in range(retries):
-            try:
-                self.data = self.update_func()
-                return
-            except (DeviceTimeoutException, GatewayOfflineException) as e:
-                _LOGGER.warning(f"API fetch failed: {e}, attempt {attempt + 1}/{retries}")
-                if attempt < retries - 1:
-                    time.sleep(1)  # Short delay before retry
-        _LOGGER.error("All fetch attempts failed, keeping last known data")
-
-    def fetch(self):
-        with self.mutex:
-            now = time.monotonic()
-            if now > self.last_fetched + UPDATE_INTERVAL:
-                self.last_fetched = now
-                self._fetch()
-            if now > self.last_fetched + 300:  # 5 minutes
-                _LOGGER.warning("Cached data is older than 5 minutes")
-            return self.data
-
-class FranklinBatterySensor(SensorEntity):
-    """Shows the current state of charge of the battery"""
+class FranklinBatterySensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Battery state of charge."""
 
     _attr_name = "FranklinWH State of Charge"
     _attr_unique_id = "franklinwh_state_of_charge"
@@ -127,22 +100,15 @@ class FranklinBatterySensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.battery_soc
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.battery_soc
-        else:
-            _LOGGER.warning("No data available for FranklinWH State of Charge")
-
-class HomeLoadSensor(SensorEntity):
-    """Shows the current state of charge of the battery"""
+class HomeLoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous home power draw."""
 
     _attr_name = "FranklinWH Home Load"
     _attr_unique_id = "franklinwh_home_load"
@@ -150,22 +116,15 @@ class HomeLoadSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.home_load
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.home_load
-        else:
-            _LOGGER.warning("No data available for FranklinWH Home Load")
-
-class BatteryUseSensor(SensorEntity):
-    """Shows the current state of charge of the battery"""
+class BatteryUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Battery charge/discharge rate (sign-inverted for dashboard convention)."""
 
     _attr_name = "FranklinWH Battery Use"
     _attr_unique_id = "franklinwh_battery_use"
@@ -173,22 +132,15 @@ class BatteryUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.battery_use * -1
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.battery_use * -1
-        else:
-            _LOGGER.warning("No data available for FranklinWH Battery Use")
-
-class GridUseSensor(SensorEntity):
-    """Shows the current state of charge of the battery"""
+class GridUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Grid power usage (sign-inverted for dashboard convention)."""
 
     _attr_name = "FranklinWH Grid Use"
     _attr_unique_id = "franklinwh_grid_use"
@@ -196,22 +148,15 @@ class GridUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.grid_use * -1
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.grid_use * -1
-        else:
-            _LOGGER.warning("No data available for FranklinWH Grid Use")
-
-class SolarProductionSensor(SensorEntity):
-    """Shows the current state of charge of the battery"""
+class SolarProductionSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous solar production."""
 
     _attr_name = "FranklinWH Solar Production"
     _attr_unique_id = "franklinwh_solar_production"
@@ -219,22 +164,15 @@ class SolarProductionSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.solar_production
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.solar_production
-        else:
-            _LOGGER.warning("No data available for FranklinWH Solar Production")
-
-class BatteryChargeSensor(SensorEntity):
-    """Shows the charging stats of the battery"""
+class BatteryChargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy charged to battery today."""
 
     _attr_name = "FranklinWH Battery Charge"
     _attr_unique_id = "franklinwh_battery_charge"
@@ -242,22 +180,15 @@ class BatteryChargeSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.battery_charge
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.battery_charge
-        else:
-            _LOGGER.warning("No data available for FranklinWH Battery Charge")
-
-class BatteryDischargeSensor(SensorEntity):
-    """Shows the charging stats of the battery"""
+class BatteryDischargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy discharged from battery today."""
 
     _attr_name = "FranklinWH Battery Discharge"
     _attr_unique_id = "franklinwh_battery_discharge"
@@ -265,22 +196,15 @@ class BatteryDischargeSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.battery_discharge
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.battery_discharge
-        else:
-            _LOGGER.warning("No data available for FranklinWH Battery Discharge")
-
-class GridImportSensor(SensorEntity):
-    """Shows the Grid Import"""
+class GridImportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy imported from grid today."""
 
     _attr_name = "FranklinWH Grid Import"
     _attr_unique_id = "franklinwh_grid_import"
@@ -288,22 +212,15 @@ class GridImportSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.grid_import
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.grid_import
-        else:
-            _LOGGER.warning("No data available for FranklinWH Grid Import")
-
-class GridExportSensor(SensorEntity):
-    """Shows the Grid Export totals"""
+class GridExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy exported to grid today."""
 
     _attr_name = "FranklinWH Grid Export"
     _attr_unique_id = "franklinwh_grid_export"
@@ -311,22 +228,15 @@ class GridExportSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.grid_export
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.grid_export
-        else:
-            _LOGGER.warning("No data available for FranklinWH Grid Export")
-
-class HomeUseSensor(SensorEntity):
-    """Shows the Home Use daily totals"""
+class HomeUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total home energy consumption today."""
 
     _attr_name = "FranklinWH Home Daily Use"
     _attr_unique_id = "franklinwh_home_daily_use"
@@ -334,22 +244,15 @@ class HomeUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.home_use
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.home_use
-        else:
-            _LOGGER.warning("No data available for FranklinWH Home Daily Use")
-
-class GeneratorDailyUseSensor(SensorEntity):
-    """Shows the Generator Total daily use"""
+class GeneratorDailyUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total generator energy today."""
 
     _attr_name = "FranklinWH Generator Daily Use"
     _attr_unique_id = "franklinwh_generator_daily_use"
@@ -357,22 +260,15 @@ class GeneratorDailyUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.generator
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.generator
-        else:
-            _LOGGER.warning("No data available for FranklinWH Generator Daily Use")
-
-class SolarUseSensor(SensorEntity):
-    """Shows the charging stats of the battery"""
+class SolarUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total solar energy produced today."""
 
     _attr_name = "FranklinWH Solar Daily Use"
     _attr_unique_id = "franklinwh_solar_daily_use"
@@ -380,22 +276,15 @@ class SolarUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.solar
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.solar
-        else:
-            _LOGGER.warning("No data available for FranklinWH Solar Daily Use")
-
-class GeneratorUseSensor(SensorEntity):
-    """Shows the current power output of the generator"""
+class GeneratorUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous generator power output."""
 
     _attr_name = "FranklinWH Generator Use"
     _attr_unique_id = "franklinwh_generator_use"
@@ -403,154 +292,120 @@ class GeneratorUseSensor(SensorEntity):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.generator_production
+        return None
 
-    def update(self) -> None:
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.generator_production
-        else:
-            _LOGGER.warning("No data available for FranklinWH Generator Use")
 
-class Sw1LoadSensor(SensorEntity):
-    """Shows the current power use by switch 1"""
+class Sw1LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous power on switch 1."""
 
     _attr_name = "FranklinWH Switch 1 Load"
+    _attr_unique_id = "franklinwh_switch_1_load"
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.switch_1_load
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.switch_1_load
-
-class Sw1UseSensor(SensorEntity):
-    """Shows the lifetime energy usage by switch 1"""
+class Sw1UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Lifetime energy usage by switch 1."""
 
     _attr_name = "FranklinWH Switch 1 Lifetime Use"
+    _attr_unique_id = "franklinwh_switch_1_lifetime_use"
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
-
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
-
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.switch_1_use
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.switch_1_use
+        return None
 
 
-class Sw2LoadSensor(SensorEntity):
-    """Shows the current power use by switch 2"""
+class Sw2LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous power on switch 2."""
 
     _attr_name = "FranklinWH Switch 2 Load"
+    _attr_unique_id = "franklinwh_switch_2_load"
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.switch_2_load
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.switch_2_load
-
-class Sw2UseSensor(SensorEntity):
-    """Shows the lifetime energy usage by switch 1"""
+class Sw2UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Lifetime energy usage by switch 2."""
 
     _attr_name = "FranklinWH Switch 2 Lifetime Use"
+    _attr_unique_id = "franklinwh_switch_2_lifetime_use"
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
-
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
-
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.switch_2_use
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.switch_2_use
+        return None
 
 
-class V2LUseSensor(SensorEntity):
-    """Shows the current power use by the car switch"""
+class V2LUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Instantaneous V2L power."""
 
     _attr_name = "FranklinWH V2L Use"
+    _attr_unique_id = "franklinwh_v2l_use"
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.current.v2l_use
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.current.v2l_use
-
-class V2LExportSensor(SensorEntity):
-    """Shows the lifetime energy exported to the car switch"""
+class V2LExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy delivered to V2L."""
 
     _attr_name = "FranklinWH V2L Export"
+    _attr_unique_id = "franklinwh_v2l_export"
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.v2l_export
+        return None
 
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
 
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.v2l_export
-
-class V2LImportSensor(SensorEntity):
-    """Shows the lifetime energy exported to the car switch"""
+class V2LImportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+    """Total energy drawn from V2L."""
 
     _attr_name = "FranklinWH V2L Import"
+    _attr_unique_id = "franklinwh_v2l_import"
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
 
-    def __init__(self, cache):
-        self._cache = cache
-
-    def update(self) -> None:
-        """Fetch new state data for the sensor.
-
-        This is the only method that should fetch new data for Home Assistant.
-        """
-        stats = self._cache.fetch()
-        if stats is not None:
-            self._attr_native_value = stats.totals.v2l_import
+    @property
+    def native_value(self):
+        if self.coordinator.data and self.coordinator.data.stats:
+            return self.coordinator.data.stats.totals.v2l_import
+        return None
