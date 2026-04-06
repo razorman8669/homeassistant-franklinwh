@@ -1,1 +1,1 @@
-"""The example sensor integration."""
+"""FranklinWH integration for Home Assistant."""
