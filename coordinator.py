@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import timedelta
 import logging
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
     DataUpdateCoordinator,
     UpdateFailed,
 )
@@ -16,9 +17,9 @@ from .franklin_client import (
     AccountLockedException,
     Client,
     DeviceTimeoutException,
+    FranklinData,
     GatewayOfflineException,
     InvalidCredentialsException,
-    Stats,
     TokenFetcher,
 )
 
@@ -26,18 +27,12 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "franklin_wh"
 DEFAULT_UPDATE_INTERVAL = 60
-MAX_RETRIES = 3
-RETRY_DELAY = 2
-
-
-@dataclass
-class FranklinData:
-    """Bundled result from a single poll cycle."""
-
-    stats: Stats | None
-    switch_state: tuple[bool, ...] | None
-    mode: str | None
-    mode_soc: int | None
+MIN_UPDATE_INTERVAL = 15
+# Franklin cloud often returns HTTP 200 with code 102 ("device timed out") when
+# the gateway is slow; poll_bundle runs several MQTT round-trips per cycle.
+MAX_RETRIES = 4
+# Exponential backoff ceiling between attempts (seconds).
+_BACKOFF_CAP = 30
 
 
 class FranklinCoordinator(DataUpdateCoordinator[FranklinData]):
@@ -61,6 +56,17 @@ class FranklinCoordinator(DataUpdateCoordinator[FranklinData]):
         self.tolerate_stale_data = tolerate_stale_data
         self._last_good_data: FranklinData | None = None
 
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Device registry entry grouping all FranklinWH entities together."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.client.gateway)},
+            name=f"FranklinWH ({self.client.gateway})",
+            manufacturer="FranklinWH",
+            model="aPower Home Power Solution",
+            configuration_url="https://energy.franklinwh.com/",
+        )
+
     async def _async_update_data(self) -> FranklinData:
         try:
             data = await self._poll_with_retries()
@@ -68,23 +74,32 @@ class FranklinCoordinator(DataUpdateCoordinator[FranklinData]):
             AccountLockedException,
             InvalidCredentialsException,
         ) as err:
+            # Auth errors are terminal for this config; do not keep stale data.
             raise UpdateFailed(f"Authentication error: {err}") from err
         except (
             DeviceTimeoutException,
             GatewayOfflineException,
         ) as err:
             if self.tolerate_stale_data and self._last_good_data is not None:
-                _LOGGER.warning(
-                    "FranklinWH API unavailable (%s); returning stale data", err
+                _LOGGER.info(
+                    "FranklinWH API unavailable (%s); keeping last successful data",
+                    err,
                 )
                 return self._last_good_data
             raise UpdateFailed(
-                f"FranklinWH API unavailable after {MAX_RETRIES} retries: {err}"
+                f"FranklinWH API unavailable after {MAX_RETRIES} attempts ({err}). "
+                "If this is frequent, set tolerate_stale_data: true on the sensor platform."
             ) from err
         except Exception as err:
             if self.tolerate_stale_data and self._last_good_data is not None:
-                _LOGGER.warning(
-                    "Unexpected error polling FranklinWH (%s); returning stale data",
+                # Full traceback at debug so real bugs aren't silently swallowed
+                # when tolerate_stale_data hides them from users.
+                _LOGGER.debug(
+                    "Unexpected error polling FranklinWH; keeping last successful data",
+                    exc_info=True,
+                )
+                _LOGGER.info(
+                    "Unexpected error polling FranklinWH (%s); keeping last successful data",
                     err,
                 )
                 return self._last_good_data
@@ -94,21 +109,72 @@ class FranklinCoordinator(DataUpdateCoordinator[FranklinData]):
         return data
 
     async def _poll_with_retries(self) -> FranklinData:
-        last_exc: Exception | None = None
+        """Poll the API with bounded retries.
+
+        Bounded both by ``MAX_RETRIES`` and by a soft time budget derived from
+        the configured ``update_interval``, so a pathological slow-gateway cycle
+        can't run for several minutes and trample the next scheduled update.
+        """
+        loop = asyncio.get_running_loop()
+        interval_s = (
+            self.update_interval.total_seconds()
+            if self.update_interval is not None
+            else DEFAULT_UPDATE_INTERVAL
+        )
+        # Reserve ~90% of the interval for this cycle; floor of 30s so very
+        # short intervals still have room for a single retry.
+        deadline = loop.time() + max(interval_s * 0.9, 30)
+
+        last_exc: DeviceTimeoutException | GatewayOfflineException = (
+            DeviceTimeoutException("FranklinWH poll never ran")
+        )
+
         for attempt in range(MAX_RETRIES):
             if attempt > 0:
-                _LOGGER.warning(
-                    "FranklinWH poll retry %d/%d", attempt + 1, MAX_RETRIES
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    _LOGGER.debug(
+                        "FranklinWH retry budget exhausted after %d attempt(s)",
+                        attempt,
+                    )
+                    break
+                delay = min(_BACKOFF_CAP, 2**attempt, max(1, int(remaining)))
+                _LOGGER.debug(
+                    "FranklinWH poll retry %d/%d after %ds backoff",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    delay,
                 )
-                await asyncio.sleep(RETRY_DELAY)
+                await asyncio.sleep(delay)
+
             try:
                 return await self.hass.async_add_executor_job(
                     self.client.poll_bundle
                 )
             except (DeviceTimeoutException, GatewayOfflineException) as err:
-                _LOGGER.warning("FranklinWH poll attempt %d failed: %s", attempt + 1, err)
                 last_exc = err
-        raise last_exc  # type: ignore[misc]
+                # Per-attempt detail is debug-only; HA logs UpdateFailed at
+                # error when all attempts are exhausted.
+                _LOGGER.debug(
+                    "FranklinWH poll attempt %d/%d failed: %s",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    err,
+                )
+
+        raise last_exc
+
+
+class FranklinEntity(CoordinatorEntity[FranklinCoordinator]):
+    """Base coordinator-backed entity with device registry wiring.
+
+    Using a small base class avoids repeating ``_attr_device_info`` setup
+    across every sensor/switch/select and keeps grouping consistent.
+    """
+
+    def __init__(self, coordinator: FranklinCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_device_info = coordinator.device_info
 
 
 def _coordinator_key(username: str, gateway: str) -> str:
@@ -125,14 +191,33 @@ async def get_coordinator(
 ) -> FranklinCoordinator:
     """Get or create a shared FranklinCoordinator for a gateway.
 
-    The first platform that calls this determines the update_interval and
-    tolerate_stale_data setting for the coordinator's lifetime.
+    The first platform to call this fixes the update_interval and
+    tolerate_stale_data settings for the coordinator's lifetime. If a later
+    platform requests different values, we log a warning so the user knows
+    their second ``configuration.yaml`` stanza is effectively ignored.
     """
     hass.data.setdefault(DOMAIN, {})
     key = _coordinator_key(username, gateway)
 
-    if key in hass.data[DOMAIN]:
-        return hass.data[DOMAIN][key]
+    existing = hass.data[DOMAIN].get(key)
+    if existing is not None:
+        if existing.update_interval != update_interval:
+            _LOGGER.warning(
+                "FranklinWH: ignoring update_interval=%s for gateway %s; "
+                "an earlier platform already fixed it at %s",
+                update_interval,
+                gateway,
+                existing.update_interval,
+            )
+        if existing.tolerate_stale_data != tolerate_stale_data:
+            _LOGGER.warning(
+                "FranklinWH: ignoring tolerate_stale_data=%s for gateway %s; "
+                "an earlier platform already fixed it at %s",
+                tolerate_stale_data,
+                gateway,
+                existing.tolerate_stale_data,
+            )
+        return existing
 
     fetcher = TokenFetcher(username, password)
     client = await hass.async_add_executor_job(Client, fetcher, gateway)

@@ -18,15 +18,24 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import (
     DEFAULT_UPDATE_INTERVAL,
+    MIN_UPDATE_INTERVAL,
     FranklinCoordinator,
+    FranklinEntity,
     get_coordinator,
+)
+from .franklin_client import (
+    AccountLockedException,
+    DeviceTimeoutException,
+    FranklinAPIError,
+    GatewayOfflineException,
+    InvalidCredentialsException,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,7 +47,10 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
         vol.Required(CONF_ID): cv.string,
         vol.Required(CONF_NAME): cv.string,
         vol.Required(CONF_SWITCHES): cv.ensure_list(vol.In([1, 2, 3])),
-        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): cv.time_period,
+        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): vol.All(
+            cv.time_period,
+            vol.Range(min=timedelta(seconds=MIN_UPDATE_INTERVAL)),
+        ),
     }
 )
 
@@ -68,7 +80,7 @@ async def async_setup_platform(
     ])
 
 
-class SmartCircuitSwitch(CoordinatorEntity[FranklinCoordinator], SwitchEntity):
+class SmartCircuitSwitch(FranklinEntity, SwitchEntity):
     """Representation of a FranklinWH smart circuit switch."""
 
     def __init__(
@@ -80,33 +92,69 @@ class SmartCircuitSwitch(CoordinatorEntity[FranklinCoordinator], SwitchEntity):
         super().__init__(coordinator)
         self._switches = switches
         self._attr_name = f"FranklinWH {name}"
-        self._is_on: bool | None = False
+        # NOTE: intentionally no _attr_unique_id — the existing switch entity
+        # relies on HA's name-based entity_id, and adding a unique_id now would
+        # re-register it and break saved automations/dashboards. See project
+        # history for the "preserve existing entity_ids" constraint.
+
+    @property
+    def available(self) -> bool:
+        """Only available once the coordinator has produced switch data."""
+        return (
+            super().available
+            and self.coordinator.data is not None
+            and self.coordinator.data.switch_state is not None
+        )
 
     @property
     def is_on(self) -> bool | None:
-        if self.coordinator.data and self.coordinator.data.switch_state:
-            values = [self.coordinator.data.switch_state[i] for i in self._switches]
-            if all(values):
-                return True
-            if not any(values):
-                return False
+        data = self.coordinator.data
+        if data is None or data.switch_state is None:
+            # No data yet / data missing -> HA shows ``unavailable`` rather
+            # than a misleading "off".
             return None
-        return self._is_on
+        try:
+            values = [data.switch_state[i] for i in self._switches]
+        except IndexError:
+            _LOGGER.debug(
+                "FranklinWH switch_state has fewer entries than expected: %s",
+                data.switch_state,
+            )
+            return None
+        if all(values):
+            return True
+        if not any(values):
+            return False
+        # Mixed state across ganged switches -> unknown.
+        return None
+
+    async def _set_state(self, turn_on: bool) -> None:
+        switches: list[bool | None] = [None, None, None]
+        for i in self._switches:
+            switches[i] = turn_on
+        try:
+            await self.hass.async_add_executor_job(
+                self.coordinator.client.set_smart_switch_state, tuple(switches)
+            )
+        except RuntimeError as err:
+            # Raised by the client when merged switches 1+2 would be set to
+            # different values; surface as a clean HA error rather than an
+            # unhandled traceback in the UI.
+            raise HomeAssistantError(str(err)) from err
+        except (
+            DeviceTimeoutException,
+            GatewayOfflineException,
+            AccountLockedException,
+            InvalidCredentialsException,
+            FranklinAPIError,
+        ) as err:
+            raise HomeAssistantError(
+                f"Failed to change FranklinWH switch: {err}"
+            ) from err
+        await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self, **kwargs) -> None:
-        switches = [None, None, None]
-        for i in self._switches:
-            switches[i] = True
-        await self.hass.async_add_executor_job(
-            self.coordinator.client.set_smart_switch_state, switches
-        )
-        await self.coordinator.async_request_refresh()
+        await self._set_state(True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        switches = [None, None, None]
-        for i in self._switches:
-            switches[i] = False
-        await self.hass.async_add_executor_job(
-            self.coordinator.client.set_smart_switch_state, switches
-        )
-        await self.coordinator.async_request_refresh()
+        await self._set_state(False)

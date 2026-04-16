@@ -24,12 +24,11 @@ from homeassistant.core import HomeAssistant
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import (
     DEFAULT_UPDATE_INTERVAL,
-    FranklinCoordinator,
-    FranklinData,
+    MIN_UPDATE_INTERVAL,
+    FranklinEntity,
     get_coordinator,
 )
 
@@ -40,7 +39,10 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
         vol.Required(CONF_USERNAME): cv.string,
         vol.Required(CONF_PASSWORD): cv.string,
         vol.Required(CONF_ID): cv.string,
-        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): cv.time_period,
+        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): vol.All(
+            cv.time_period,
+            vol.Range(min=timedelta(seconds=MIN_UPDATE_INTERVAL)),
+        ),
         vol.Optional("tolerate_stale_data", default=False): cv.boolean,
     }
 )
@@ -91,7 +93,7 @@ async def async_setup_platform(
     ])
 
 
-class FranklinBatterySensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class FranklinBatterySensor(FranklinEntity, SensorEntity):
     """Battery state of charge."""
 
     _attr_name = "FranklinWH State of Charge"
@@ -107,7 +109,7 @@ class FranklinBatterySensor(CoordinatorEntity[FranklinCoordinator], SensorEntity
         return None
 
 
-class HomeLoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class HomeLoadSensor(FranklinEntity, SensorEntity):
     """Instantaneous home power draw."""
 
     _attr_name = "FranklinWH Home Load"
@@ -123,7 +125,7 @@ class HomeLoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class BatteryUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class BatteryUseSensor(FranklinEntity, SensorEntity):
     """Battery charge/discharge rate (sign-inverted for dashboard convention)."""
 
     _attr_name = "FranklinWH Battery Use"
@@ -139,7 +141,7 @@ class BatteryUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class GridUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class GridUseSensor(FranklinEntity, SensorEntity):
     """Grid power usage (sign-inverted for dashboard convention)."""
 
     _attr_name = "FranklinWH Grid Use"
@@ -155,7 +157,7 @@ class GridUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class SolarProductionSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class SolarProductionSensor(FranklinEntity, SensorEntity):
     """Instantaneous solar production."""
 
     _attr_name = "FranklinWH Solar Production"
@@ -171,7 +173,7 @@ class SolarProductionSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity
         return None
 
 
-class BatteryChargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class BatteryChargeSensor(FranklinEntity, SensorEntity):
     """Total energy charged to battery today."""
 
     _attr_name = "FranklinWH Battery Charge"
@@ -187,7 +189,7 @@ class BatteryChargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class BatteryDischargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class BatteryDischargeSensor(FranklinEntity, SensorEntity):
     """Total energy discharged from battery today."""
 
     _attr_name = "FranklinWH Battery Discharge"
@@ -203,7 +205,7 @@ class BatteryDischargeSensor(CoordinatorEntity[FranklinCoordinator], SensorEntit
         return None
 
 
-class GridImportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class GridImportSensor(FranklinEntity, SensorEntity):
     """Total energy imported from grid today."""
 
     _attr_name = "FranklinWH Grid Import"
@@ -219,7 +221,7 @@ class GridImportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class GridExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class GridExportSensor(FranklinEntity, SensorEntity):
     """Total energy exported to grid today."""
 
     _attr_name = "FranklinWH Grid Export"
@@ -235,7 +237,7 @@ class GridExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class HomeUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class HomeUseSensor(FranklinEntity, SensorEntity):
     """Total home energy consumption today."""
 
     _attr_name = "FranklinWH Home Daily Use"
@@ -251,7 +253,7 @@ class HomeUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class GeneratorDailyUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class GeneratorDailyUseSensor(FranklinEntity, SensorEntity):
     """Total generator energy today."""
 
     _attr_name = "FranklinWH Generator Daily Use"
@@ -267,7 +269,7 @@ class GeneratorDailyUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEnti
         return None
 
 
-class SolarUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class SolarUseSensor(FranklinEntity, SensorEntity):
     """Total solar energy produced today."""
 
     _attr_name = "FranklinWH Solar Daily Use"
@@ -283,7 +285,7 @@ class SolarUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class GeneratorUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class GeneratorUseSensor(FranklinEntity, SensorEntity):
     """Instantaneous generator power output."""
 
     _attr_name = "FranklinWH Generator Use"
@@ -299,7 +301,7 @@ class GeneratorUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class Sw1LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class Sw1LoadSensor(FranklinEntity, SensorEntity):
     """Instantaneous power on switch 1."""
 
     _attr_name = "FranklinWH Switch 1 Load"
@@ -315,7 +317,7 @@ class Sw1LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class Sw1UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class Sw1UseSensor(FranklinEntity, SensorEntity):
     """Lifetime energy usage by switch 1."""
 
     _attr_name = "FranklinWH Switch 1 Lifetime Use"
@@ -331,7 +333,7 @@ class Sw1UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class Sw2LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class Sw2LoadSensor(FranklinEntity, SensorEntity):
     """Instantaneous power on switch 2."""
 
     _attr_name = "FranklinWH Switch 2 Load"
@@ -347,7 +349,7 @@ class Sw2LoadSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class Sw2UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class Sw2UseSensor(FranklinEntity, SensorEntity):
     """Lifetime energy usage by switch 2."""
 
     _attr_name = "FranklinWH Switch 2 Lifetime Use"
@@ -363,7 +365,7 @@ class Sw2UseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class V2LUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class V2LUseSensor(FranklinEntity, SensorEntity):
     """Instantaneous V2L power."""
 
     _attr_name = "FranklinWH V2L Use"
@@ -379,7 +381,7 @@ class V2LUseSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class V2LExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class V2LExportSensor(FranklinEntity, SensorEntity):
     """Total energy delivered to V2L."""
 
     _attr_name = "FranklinWH V2L Export"
@@ -395,7 +397,7 @@ class V2LExportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
         return None
 
 
-class V2LImportSensor(CoordinatorEntity[FranklinCoordinator], SensorEntity):
+class V2LImportSensor(FranklinEntity, SensorEntity):
     """Total energy drawn from V2L."""
 
     _attr_name = "FranklinWH V2L Import"

@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 import typing
 import zlib
@@ -16,7 +17,9 @@ import requests
 
 _LOGGER = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT = (10, 30)
+# Connect, read — sendMqtt can sit behind a slow gateway; 102 timeouts are often
+# application-level, but a longer read avoids aborting healthy slow responses.
+REQUEST_TIMEOUT = (15, 75)
 
 
 def to_hex(inp):
@@ -55,6 +58,21 @@ class Totals:
 class Stats:
     current: Current
     totals: Totals
+
+
+@dataclass
+class FranklinData:
+    """Bundled result from a single coordinator poll cycle.
+
+    Lives in the client (not the coordinator) so that the client can both
+    produce and type it without creating a circular import with the HA-side
+    coordinator module.
+    """
+
+    stats: "Stats | None"
+    switch_state: "tuple[bool, ...] | None"
+    mode: str | None
+    mode_soc: int | None
 
 
 MODE_TIME_OF_USE = "time_of_use"
@@ -180,11 +198,21 @@ class TokenFetcher:
 
 
 def retry(func, fltr, refresh_func):
-    """Tries calling func, and if filter fails it calls refresh func then tries again."""
+    """Tries calling func, and if filter fails it calls refresh func then tries again.
+
+    A refresh failure is surfaced as ``TokenExpiredException`` so callers can
+    distinguish it from a normal API error; this avoids silently swallowing
+    auth failures inside an otherwise successful-looking retry.
+    """
     res = func()
     if fltr(res):
         return res
-    refresh_func()
+    try:
+        refresh_func()
+    except (AccountLockedException, InvalidCredentialsException):
+        raise
+    except Exception as err:
+        raise TokenExpiredException(f"Token refresh failed: {err}") from err
     return func()
 
 
@@ -193,6 +221,10 @@ class Client:
         self.fetcher = fetcher
         self.gateway = gateway
         self.url_base = url_base
+        # Serialize token refreshes across threads so concurrent platforms
+        # don't stampede the login endpoint or race on ``self.token``.
+        self._token_lock = threading.Lock()
+        self.token: str | None = None
         self.refresh_token()
         self.snno = 0
 
@@ -262,8 +294,14 @@ class Client:
 
         return retry(__get, lambda j: j.get("code") != 401, self.refresh_token)
 
-    def refresh_token(self):
-        self.token = self.fetcher.get_token()
+    def refresh_token(self) -> None:
+        """Refresh the auth token.
+
+        Guarded by a lock so concurrent callers don't race on ``self.token``.
+        Serial duplicate logins are accepted as the cost of simplicity.
+        """
+        with self._token_lock:
+            self.token = self.fetcher.get_token()
 
     def get_smart_switch_state(self):
         # TODO(richo) This API is super in flux, both because of how vague the
@@ -334,7 +372,7 @@ class Client:
         return json.loads(data)
 
     def set_mode(self, mode):
-        url = DEFAULT_URL_BASE + "hes-gateway/terminal/tou/updateTouMode"
+        url = self.url_base + "hes-gateway/terminal/tou/updateTouMode"
         payload = mode.payload(self.gateway)
         res = self._post_form(url, payload)
         return res
@@ -386,15 +424,13 @@ class Client:
             ),
         )
 
-    def poll_bundle(self):
+    def poll_bundle(self) -> "FranklinData":
         """Single method that fetches stats, switch state, and mode in one go.
 
         Deduplicates internal API calls: _status() is called once for stats and
         switch state, _switch_usage() for energy data, _switch_status() for
         mode info.
         """
-        from .coordinator import FranklinData
-
         data = self._status()
         swdata = self._switch_usage()
 
@@ -476,14 +512,11 @@ class Client:
         return temp.replace('"DATA"', blob.decode("utf-8"))
 
     def _mqtt_send(self, payload):
-        url = DEFAULT_URL_BASE + "hes-gateway/terminal/sendMqtt"
-
-        try:
-            res = self._post(url, payload)
-        except FranklinAPIError:
-            raise
-        except Exception as err:
-            raise DeviceTimeoutException(f"MQTT send failed: {err}") from err
+        url = self.url_base + "hes-gateway/terminal/sendMqtt"
+        # _post already maps requests.Timeout -> DeviceTimeoutException and
+        # other transport/JSON errors -> FranklinAPIError; let those propagate
+        # unchanged rather than masking them as a device timeout.
+        res = self._post(url, payload)
 
         code = res.get("code")
         if code == 102:
@@ -491,12 +524,12 @@ class Client:
         if code == 136:
             raise GatewayOfflineException(res.get("message", "Gateway offline"))
         if code != 200:
-            raise FranklinAPIError(f"Unexpected MQTT response code {code}: {res.get('message')}")
-
-        try:
-            return res
-        except (KeyError, TypeError) as err:
-            raise FranklinAPIError(f"Missing expected fields in MQTT response: {err}") from err
+            raise FranklinAPIError(
+                f"Unexpected MQTT response code {code}: {res.get('message')}"
+            )
+        if "result" not in res or "dataArea" not in res.get("result", {}):
+            raise FranklinAPIError("Malformed MQTT response: missing result.dataArea")
+        return res
 
 
 class UnknownMethodsClient(Client):

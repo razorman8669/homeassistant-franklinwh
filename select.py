@@ -16,11 +16,11 @@ from homeassistant.exceptions import HomeAssistantError
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import (
     DEFAULT_UPDATE_INTERVAL,
-    FranklinCoordinator,
+    MIN_UPDATE_INTERVAL,
+    FranklinEntity,
     get_coordinator,
 )
 from .franklin_client import (
@@ -43,7 +43,10 @@ PLATFORM_SCHEMA = PARENT_PLATFORM_SCHEMA.extend(
         vol.Required(CONF_USERNAME): cv.string,
         vol.Required(CONF_PASSWORD): cv.string,
         vol.Required(CONF_ID): cv.string,
-        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): cv.time_period,
+        vol.Optional("update_interval", default=DEFAULT_UPDATE_INTERVAL): vol.All(
+            cv.time_period,
+            vol.Range(min=timedelta(seconds=MIN_UPDATE_INTERVAL)),
+        ),
     }
 )
 
@@ -75,7 +78,7 @@ async def async_setup_platform(
     async_add_entities([FranklinModeSelect(coordinator)])
 
 
-class FranklinModeSelect(CoordinatorEntity[FranklinCoordinator], SelectEntity):
+class FranklinModeSelect(FranklinEntity, SelectEntity):
     """Select entity for FranklinWH operating mode."""
 
     _attr_options = MODE_OPTIONS
